@@ -6,8 +6,8 @@ from abc import ABC, abstractmethod
 from tqdm import tqdm
 
 from torch.utils.data import DataLoader
-from loss_wrappers import TheoreticalLossWrapper
-from models import ModelCreator
+from src.loss_wrappers import TheoreticalLossWrapper
+from src.models import ModelCreator
 
 
 
@@ -16,11 +16,10 @@ from models import ModelCreator
 class BaseExperiment(ABC):
     """Base class for testing optimization identities with efficient gradient computation"""
 
-    def __init__(self, model_creator:ModelCreator, train_loader:DataLoader, val_loader:DataLoader, test_loader:DataLoader,
+    def __init__(self, model_creator:ModelCreator, train_loader:DataLoader, test_loader:DataLoader,
                  learning_rate:float, weight_decay:float, task_loss_fn:TheoreticalLossWrapper, max_steps:int):
         self.model_creator = model_creator
         self.train_loader = train_loader
-        self.val_loader = val_loader
         self.test_loader = test_loader
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
@@ -46,16 +45,16 @@ class BaseExperiment(ABC):
                 x, y = x.to(self.device), y.to(self.device)
                 logits = model(x)
                 task_loss = self.task_loss_fn(logits, y)
-                total_task_loss += task_loss.item() * x.size(0)
+                total_task_loss += task_loss * x.size(0)
                 total_samples += x.size(0)
 
         model.train()
-        return total_task_loss / total_samples
+        return total_task_loss.item() / total_samples
 
 
     def _compute_weight_norm_sq(self, model:nn.Module) -> float:
         """Compute squared norm of model weights"""
-        return sum(p.norm(2).item()**2 for p in model.parameters())
+        return sum(p.norm(2)**2 for p in model.parameters()).item()
 
 
     def _compute_regularization(self, weights_norm_sq:float) -> float:
@@ -76,7 +75,7 @@ class BaseExperiment(ABC):
 
         # Task gradient metrics || grad L_task ||^2 (from .grad fields after backward())
         # This is the PURE task gradient, as .step() has not been called.
-        grad_L_task_norm_sq_t = sum(p.grad.norm(2).item()**2 for p in model.parameters() if p.grad is not None)
+        grad_L_task_norm_sq_t = sum(p.grad.norm(2)**2 for p in model.parameters() if p.grad is not None).item()
 
         # Curvature F(L_task)^2
         curvature_task_sq_t = self.task_loss_fn.curvature_squared(L_task_batch_t)
@@ -110,10 +109,49 @@ class BaseExperiment(ABC):
 
         if step % eval_frequency == 0:
             eval_test_metrics = {
-                #'L_task_eval_t': self._compute_task_loss_only(model, self.val_loader),
                 'L_task_test_t': self._compute_task_loss_only(model, self.test_loader),
             }
         return eval_test_metrics
+
+
+    # @abstractmethod
+    # def _perform_gradient_step(self,
+    #         model: nn.Module,
+    #         optimizer: optim.Optimizer,
+    #         train_loader_iter: Iterator[tuple[torch.Tensor, torch.Tensor]],
+    #         epoch: int,
+    #         scheduler
+    #         ) -> tuple[dict, Iterator[tuple[torch.Tensor, torch.Tensor]], int]:
+    #     """
+    #     Performs a single gradient computation step (either SGD or GD).
+        
+    #     This method is responsible for:
+    #     1. Getting data (one batch for SGD, all data for GD).
+    #     2. Calling optimizer.zero_grad().
+    #     3. Calculating loss.
+    #     4. Calling loss.backward().
+    #     5. Computing and returning batch_metrics using _compute_batch_metrics.
+    #     6. Returning the updated data loader iterator and the epoch.
+    #     """
+    #     try:
+    #         # Get next training batch
+    #         x, y = next(train_loader_iter)
+    #     except StopIteration:
+    #         # Restart iterator if we've gone through all data
+    #         train_loader_iter = iter(self.train_loader)
+    #         x, y = next(train_loader_iter)
+    #         epoch = epoch + 1
+    #         scheduler.step()
+
+    #     x, y = x.to(self.device), y.to(self.device)
+    #     batch_size = x.shape[0]
+
+    #     # === FORWARD PASS ===
+    #     optimizer.zero_grad()
+    #     logits = model(x)
+    #     task_loss = self.task_loss_fn(logits, y)  # Pure task loss
+
+
 
 
     def run(self, eval_frequency:int=None):
@@ -126,7 +164,8 @@ class BaseExperiment(ABC):
         optimizer = self._create_optimizer(model)
 
         #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=1e-4, max_lr=1e-3, step_size_up=4, mode="triangular")
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.95)
+        #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.95)
+        scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1, total_iters=self.max_steps)
 
 
         #set test and eval set test frequency
@@ -272,7 +311,6 @@ if __name__ == "__main__":
     experiment = SGDExperiment(
         model_creator=model_creator,
         train_loader=train_loader,
-        val_loader=eval_loader,  # Use val_loader for gradient computation
         test_loader=test_loader,
         learning_rate=initial_learning_rate,
         weight_decay=initial_learning_rate/100,

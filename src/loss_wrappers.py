@@ -39,7 +39,7 @@ class TheoreticalLossWrapper(ABC):
 class CrossEntropyLossWrapper(TheoreticalLossWrapper):
     def __init__(self, reduction='mean', label_smoothing:float=0.0, alpha:float=3/2.):
         super().__init__(
-            base_loss=nn.CrossEntropyLoss(reduction=reduction, label_smoothing=label_smoothing)
+            base_loss_fn=nn.CrossEntropyLoss(reduction=reduction, label_smoothing=label_smoothing)
         )
         self.alpha = alpha
 
@@ -54,7 +54,7 @@ class CrossEntropyLossWrapper(TheoreticalLossWrapper):
 class MSELossWrapper(TheoreticalLossWrapper):
     def __init__(self, reduction='mean'):
         super().__init__(
-            base_loss=nn.MSELoss(reduction=reduction)
+            base_loss_fn=nn.MSELoss(reduction=reduction)
         )
 
     def curvature_squared(self, loss_value:float) -> float:
@@ -68,7 +68,7 @@ class MSELossWrapper(TheoreticalLossWrapper):
 class MAELossWrapper(TheoreticalLossWrapper):
     def __init__(self, reduction='mean'):
         super().__init__(
-            nn.L1Loss(reduction=reduction)
+            base_loss_fn=nn.L1Loss(reduction=reduction)
         )
 
     def curvature_squared(self, loss_value:float) -> float:
@@ -82,7 +82,7 @@ class MAELossWrapper(TheoreticalLossWrapper):
 class BCELossWrapper(TheoreticalLossWrapper):
     def __init__(self, reduction='mean'):
         super().__init__(
-            base_loss=nn.BCELoss(reduction=reduction)
+            base_loss_fn=nn.BCELoss(reduction=reduction)
         )
 
     def curvature_squared(self, loss_value:float) -> float:
