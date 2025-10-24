@@ -6,7 +6,7 @@ This repository provides the official code and reproducible experiments accompan
 ## Experiment 1:
 Goal: Verify the validity of the SGD ODE
 Result: `experiments/experiment_GD_wideMLP_2000.csv`
-<img src="experiments/experiment_GD_wideMLP_2000.png" alt="non-causal 15033000" width="260">
+<img src="experiments/experiment_GD_wideMLP_2000.png" alt="non-causal 15033000" width="800">
 
 Observation: The solution of the ODE computed with the measured rate of decay match with the exact losses observed on the train set.
 
