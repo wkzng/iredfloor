@@ -36,5 +36,5 @@ class LossDynamicsSolver:
                 - lamba_eff(t): as the effective rate of decay
                 - batch_size(t): the record of batch size
         """
-        dx_dt = lambda x, t : - self.rate_interpolator(t) * self.loss_fn_wrapper.curvature_squared(x) / self.batch_interpolator(t)
+        dx_dt = lambda x, t : - self.rate_interpolator(t) * self.loss_fn_wrapper.g_shape(x) / self.batch_interpolator(t)
         return odeint(dx_dt, self.initial_loss, self.time_steps)

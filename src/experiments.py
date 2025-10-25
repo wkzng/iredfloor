@@ -26,6 +26,8 @@ class BaseExperiment(ABC):
         self.task_loss_fn = task_loss_fn
         self.max_steps = max_steps
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.scaler = torch.amp.GradScaler(device=str(self.device))
+        self.n_dataset = len(self.train_loader.dataset)
 
 
     @abstractmethod
@@ -44,7 +46,7 @@ class BaseExperiment(ABC):
             for x, y in data_loader:
                 x, y = x.to(self.device), y.to(self.device)
                 logits = model(x)
-                task_loss = self.task_loss_fn(logits, y)
+                task_loss, _ = self.task_loss_fn(logits, y)
                 total_task_loss += task_loss * x.size(0)
                 total_samples += x.size(0)
 
@@ -62,10 +64,15 @@ class BaseExperiment(ABC):
         return 0.5 * self.weight_decay * weights_norm_sq
 
 
-    def _compute_batch_metrics(self, model:nn.Module, task_loss:torch.Tensor, weights_norm_sq:float, batch_size:int) -> dict:
+    def _compute_batch_metrics(
+            self, model:nn.Module, task_loss:torch.Tensor, weights_norm_sq:float, batch_size:int,
+            L_task_variance:torch.Tensor, task_residual_error_sq:torch.Tensor
+        ) -> dict:
         """Compute all metrics for current training batch"""
         # Task loss (pure, from batch)
-        L_task_batch_t = task_loss.item()
+        L_task_batch_t = task_loss.detach().item()
+        L_task_variance = L_task_variance.detach().item()
+        task_residual_error_sq = task_residual_error_sq.detach().item()
 
         # Regularization
         L_reg_batch_t = self._compute_regularization(weights_norm_sq)
@@ -75,31 +82,60 @@ class BaseExperiment(ABC):
 
         # Task gradient metrics || grad L_task ||^2 (from .grad fields after backward())
         # This is the PURE task gradient, as .step() has not been called.
-        grad_L_task_norm_sq_t = sum(p.grad.norm(2)**2 for p in model.parameters() if p.grad is not None).item()
+        # grad_L_task_norm_sq_t = sum(p.grad.norm(2)**2 for p in model.parameters() if p.grad is not None).item()
+        grad_L_task_norm_sq_t = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                grad_L_task_norm_sq_t += torch.dot(p.grad.flatten(), p.grad.flatten())
+        grad_L_task_norm_sq_t = grad_L_task_norm_sq_t.item()
 
-        # Curvature F(L_task)^2
-        curvature_task_sq_t = self.task_loss_fn.curvature_squared(L_task_batch_t)
+        # Shape function g(L_task) and its approximations
+        g_rayleigh = task_residual_error_sq / batch_size
+        g_approx_1st_order = self.task_loss_fn.g_shape(L_task_batch_t)
+        g_approx_curvature = self.task_loss_fn.g_curv(L_task_batch_t)
+        g_approx_2nd_order = g_approx_1st_order + 0.5 * L_task_variance * g_approx_curvature
 
-        # Measured (empirical) effective eigenvalue lambda_eff(t)
-        # lambda_measured = (N * ||grad L_task||^2) / F(L_task)^2
-        lambda_measured_task_t = 0.0
-        if curvature_task_sq_t > 1e-9: # Avoid division by zero
-            lambda_measured_task_t = batch_size * grad_L_task_norm_sq_t / curvature_task_sq_t
+        eps = 1e-12
+        g_approx_1st_order = max(g_approx_1st_order, eps)
+        g_approx_2nd_order = max(g_approx_2nd_order, eps)
+        g_rayleigh = max(g_rayleigh, eps)
 
-        # Theoretical rate lambda(t) from NTK theory with Rayleigh scalar
-        # This is the placeholder for our Step 2 validation.
-        # TODO: implement the Rayleigh scalar lambda(t) = r^{T} G r / ||r||^2
-        lambda_rayleigh_task_t = None
+        # Effective eigenvalue lambda_eff(t)
+        lambda_rayleigh = batch_size * grad_L_task_norm_sq_t / g_rayleigh
+        lambda_approx_1st_order = batch_size * grad_L_task_norm_sq_t / g_approx_1st_order
+        lambda_approx_2nd_order = batch_size * grad_L_task_norm_sq_t / g_approx_2nd_order
+
+        # gap between approximation of lambda
+        lambda_gap_1st_order = lambda_rayleigh - lambda_approx_1st_order
+        lambda_gap_2nd_order = lambda_rayleigh - lambda_approx_2nd_order
+
+        lambda_gap_rel_1st =  lambda_gap_1st_order / (lambda_rayleigh + eps)
+        lambda_gap_rel_2nd =  lambda_gap_2nd_order / (lambda_rayleigh + eps)
 
         return {
-            'L_task_batch_t': L_task_batch_t,
-            'L_reg_batch_t': L_reg_batch_t,
-            'L_full_batch_t': L_full_batch_t,
-            'weights_norm_sq_t': weights_norm_sq,
-            'grad_L_task_norm_sq_t': grad_L_task_norm_sq_t,
-            'curvature_task_sq_t': curvature_task_sq_t,
-            'lambda_measured_task_t': lambda_measured_task_t,
-            "lambda_rayleigh_task_t": lambda_rayleigh_task_t,
+            'L_task': L_task_batch_t,
+            'L_reg': L_reg_batch_t,
+            'L_full': L_full_batch_t,
+            '||w||^2': weights_norm_sq,
+            '||gradL_task||^2': grad_L_task_norm_sq_t,
+            "variance[L_task]": L_task_variance,
+
+            "g_approx_curvature": g_approx_curvature,
+            'g_approx_1st_order': g_approx_1st_order,
+            'g_approx_2nd_order': g_approx_2nd_order,
+            'g_rayleigh': g_rayleigh,
+
+            'lambda_approx_1st_order': lambda_approx_1st_order,
+            'lambda_approx_2nd_order': lambda_approx_2nd_order,
+            "lambda_rayleigh": lambda_rayleigh,
+
+            "lambda_gap_1st_order": lambda_gap_1st_order,
+            "lambda_gap_2nd_order": lambda_gap_2nd_order,
+
+            "lambda_gap_rel_1st": lambda_gap_rel_1st,
+            "lambda_gap_rel_2nd": lambda_gap_rel_2nd,
+
+            'n_dataset': self.n_dataset,
             "batch_size": batch_size
         }
 
@@ -114,46 +150,6 @@ class BaseExperiment(ABC):
         return eval_test_metrics
 
 
-    # @abstractmethod
-    # def _perform_gradient_step(self,
-    #         model: nn.Module,
-    #         optimizer: optim.Optimizer,
-    #         train_loader_iter: Iterator[tuple[torch.Tensor, torch.Tensor]],
-    #         epoch: int,
-    #         scheduler
-    #         ) -> tuple[dict, Iterator[tuple[torch.Tensor, torch.Tensor]], int]:
-    #     """
-    #     Performs a single gradient computation step (either SGD or GD).
-        
-    #     This method is responsible for:
-    #     1. Getting data (one batch for SGD, all data for GD).
-    #     2. Calling optimizer.zero_grad().
-    #     3. Calculating loss.
-    #     4. Calling loss.backward().
-    #     5. Computing and returning batch_metrics using _compute_batch_metrics.
-    #     6. Returning the updated data loader iterator and the epoch.
-    #     """
-    #     try:
-    #         # Get next training batch
-    #         x, y = next(train_loader_iter)
-    #     except StopIteration:
-    #         # Restart iterator if we've gone through all data
-    #         train_loader_iter = iter(self.train_loader)
-    #         x, y = next(train_loader_iter)
-    #         epoch = epoch + 1
-    #         scheduler.step()
-
-    #     x, y = x.to(self.device), y.to(self.device)
-    #     batch_size = x.shape[0]
-
-    #     # === FORWARD PASS ===
-    #     optimizer.zero_grad()
-    #     logits = model(x)
-    #     task_loss = self.task_loss_fn(logits, y)  # Pure task loss
-
-
-
-
     def run(self, eval_frequency:int=None):
         """ Run optimizer testing and return results as pandas DataFrame
             Args:
@@ -166,7 +162,6 @@ class BaseExperiment(ABC):
         #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=1e-4, max_lr=1e-3, step_size_up=4, mode="triangular")
         #scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.95)
         scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1, total_iters=self.max_steps)
-
 
         #set test and eval set test frequency
         eval_frequency = len(self.train_loader) if eval_frequency is None else eval_frequency
@@ -198,9 +193,17 @@ class BaseExperiment(ABC):
             batch_size = x.shape[0]
 
             # === FORWARD PASS ===
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             logits = model(x)
-            task_loss = self.task_loss_fn(logits, y)  # Pure task loss
+            task_loss, L_task_variance = self.task_loss_fn.forward(logits, y)  # Pure task loss
+
+            # optimizer.zero_grad(set_to_none=True)
+            # with torch.cuda.amp.autocast():
+            #     logits = model(x)
+            #     task_loss, L_task_variance = self.task_loss_fn.forward(logits, y)
+
+            # ==== COMPUTE THE RESIDUAL ====
+            task_residual_error_sq = self.task_loss_fn.compute_residual_squared(logits, y)
 
             # === COMPUTE PRE-BACKWARD METRICS ===
             weights_norm_sq = self._compute_weight_norm_sq(model)
@@ -208,13 +211,18 @@ class BaseExperiment(ABC):
 
             # === BACKWARD PASS ===
             task_loss.backward()
+            # self.scaler.scale(task_loss).backward()
+            # self.scaler.step(optimizer)
+            # self.scaler.update()
 
             # === COMPUTE BATCH METRICS ===
             batch_metrics = self._compute_batch_metrics(
                 model=model,
                 task_loss=task_loss,
                 weights_norm_sq=weights_norm_sq,
-                batch_size=batch_size
+                batch_size=batch_size,
+                L_task_variance=L_task_variance,
+                task_residual_error_sq=task_residual_error_sq
             )
 
             # === COMPUTE EVAL/TEST LOSSES (PERIODIC) ===
