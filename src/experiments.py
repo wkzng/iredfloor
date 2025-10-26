@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import pandas as pd
+import numpy as np
 from abc import ABC, abstractmethod
 from tqdm import tqdm
 
@@ -26,7 +27,6 @@ class BaseExperiment(ABC):
         self.task_loss_fn = task_loss_fn
         self.max_steps = max_steps
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.scaler = torch.amp.GradScaler(device=str(self.device))
         self.n_dataset = len(self.train_loader.dataset)
 
 
@@ -54,92 +54,103 @@ class BaseExperiment(ABC):
         return total_task_loss.item() / total_samples
 
 
-    def _compute_weight_norm_sq(self, model:nn.Module) -> float:
-        """Compute squared norm of model weights"""
-        return sum(p.norm(2)**2 for p in model.parameters()).item()
-
-
     def _compute_regularization(self, weights_norm_sq:float) -> float:
         """Compute regularization term"""
         return 0.5 * self.weight_decay * weights_norm_sq
 
 
     def _compute_batch_metrics(
-            self, model:nn.Module, task_loss:torch.Tensor, weights_norm_sq:float, batch_size:int,
+            self, model:nn.Module, task_loss:torch.Tensor, batch_size:int,
             L_task_variance:torch.Tensor, task_residual_error_sq:torch.Tensor
         ) -> dict:
         """Compute all metrics for current training batch"""
-        # Task loss (pure, from batch)
-        L_task_batch_t = task_loss.detach().item()
+        # Task loss statistic
+        L_task = task_loss.detach().item()
         L_task_variance = L_task_variance.detach().item()
         task_residual_error_sq = task_residual_error_sq.detach().item()
 
-        # Regularization
-        L_reg_batch_t = self._compute_regularization(weights_norm_sq)
+        # Weights norm and Task gradient metrics || grad L_task ||^2 (from .grad fields after backward())
+        grad_L_task_norm_sq = 0.0
+        weights_norm_sq = 0.0
 
-        # Full loss = task + regularization
-        L_full_batch_t = L_task_batch_t + L_reg_batch_t
+        with torch.no_grad():
+            for p in model.parameters():
+                #weight norm
+                p_val = p.detach().view(-1)
+                weights_norm_sq += torch.dot(p_val, p_val)
 
-        # Task gradient metrics || grad L_task ||^2 (from .grad fields after backward())
-        # This is the PURE task gradient, as .step() has not been called.
-        # grad_L_task_norm_sq_t = sum(p.grad.norm(2)**2 for p in model.parameters() if p.grad is not None).item()
-        grad_L_task_norm_sq_t = 0.0
-        for p in model.parameters():
-            if p.grad is not None:
-                grad_L_task_norm_sq_t += torch.dot(p.grad.flatten(), p.grad.flatten())
-        grad_L_task_norm_sq_t = grad_L_task_norm_sq_t.item()
+                #grad norm
+                if p.grad is not None:
+                    grad_val = p.grad.detach().view(-1)
+                    grad_L_task_norm_sq += torch.dot(grad_val, grad_val)
 
-        # Shape function g(L_task) and its approximations
-        g_rayleigh = task_residual_error_sq / batch_size
-        g_approx_1st_order = self.task_loss_fn.g_shape(L_task_batch_t)
-        g_approx_curvature = self.task_loss_fn.g_curv(L_task_batch_t)
-        g_approx_2nd_order = g_approx_1st_order + 0.5 * L_task_variance * g_approx_curvature
+        grad_L_task_norm_sq = grad_L_task_norm_sq.item()
+        weights_norm_sq = weights_norm_sq.item()
+
+        # Regularized/full loss (for logging only; optimizer may also use weight_decay)
+        L_reg = self._compute_regularization(weights_norm_sq)
+        L_full = L_task + L_reg
+
+        # Topology function g(L_task) and its approximations
+        # g(t) = (1/S) sum_i ||r_i||^2
+        g_batch = task_residual_error_sq / batch_size 
+        g_approx_1st = self.task_loss_fn.q_value(L_task)
+        g_approx_curvature = self.task_loss_fn.q_second_derivative(L_task)
+        g_approx_2nd = g_approx_1st + 0.5 * L_task_variance * g_approx_curvature
 
         eps = 1e-12
-        g_approx_1st_order = max(g_approx_1st_order, eps)
-        g_approx_2nd_order = max(g_approx_2nd_order, eps)
-        g_rayleigh = max(g_rayleigh, eps)
+        g_approx_1st = max(g_approx_1st, eps)
+        g_approx_2nd = max(g_approx_2nd, eps)
+        g_batch = max(g_batch, eps)
 
-        # Effective eigenvalue lambda_eff(t)
-        lambda_rayleigh = batch_size * grad_L_task_norm_sq_t / g_rayleigh
-        lambda_approx_1st_order = batch_size * grad_L_task_norm_sq_t / g_approx_1st_order
-        lambda_approx_2nd_order = batch_size * grad_L_task_norm_sq_t / g_approx_2nd_order
+        # Effective decay rate phi(t)
+        phi_batch = grad_L_task_norm_sq / g_batch
+        phi_approx_1st = grad_L_task_norm_sq / g_approx_1st
+        phi_approx_2nd = grad_L_task_norm_sq / g_approx_2nd
 
-        # gap between approximation of lambda
-        lambda_gap_1st_order = lambda_rayleigh - lambda_approx_1st_order
-        lambda_gap_2nd_order = lambda_rayleigh - lambda_approx_2nd_order
+        # gap between approximation of phi
+        phi_gap_1st = phi_batch - phi_approx_1st
+        phi_gap_2nd = phi_batch - phi_approx_2nd
 
-        lambda_gap_rel_1st =  lambda_gap_1st_order / (lambda_rayleigh + eps)
-        lambda_gap_rel_2nd =  lambda_gap_2nd_order / (lambda_rayleigh + eps)
+        denom = max(phi_batch, eps)
+        phi_gap_rel_1st =  phi_gap_1st / denom
+        phi_gap_rel_2nd =  phi_gap_2nd / denom
+
+        #sanity checks
+        assert np.isfinite(L_task), "Non-finite loss"
+        assert np.isfinite(grad_L_task_norm_sq), "Non-finite ||gradL||^2"
+        assert g_batch > 0, "Non-positive g_batch (add closure clamp)"
+        assert g_approx_2nd > 0, "g_approx_2nd (closure/clamp issue)"
+        assert phi_batch > 0, "phi should be non-negative under GF (check grad norm / variance stats)"
 
         return {
-            'L_task': L_task_batch_t,
-            'L_reg': L_reg_batch_t,
-            'L_full': L_full_batch_t,
-            '||w||^2': weights_norm_sq,
-            '||gradL_task||^2': grad_L_task_norm_sq_t,
-            "variance[L_task]": L_task_variance,
+            'L_task': L_task,
+            'L_reg': L_reg,
+            'L_full': L_full,
+            'weights_norm_sq': weights_norm_sq,
+            'grad_L_task_norm_sq': grad_L_task_norm_sq,
+            "L_task_variance": L_task_variance,
 
             "g_approx_curvature": g_approx_curvature,
-            'g_approx_1st_order': g_approx_1st_order,
-            'g_approx_2nd_order': g_approx_2nd_order,
-            'g_rayleigh': g_rayleigh,
+            'g_approx_1st': g_approx_1st,
+            'g_approx_2nd': g_approx_2nd,
+            'g_batch': g_batch,
 
-            'lambda_approx_1st_order': lambda_approx_1st_order,
-            'lambda_approx_2nd_order': lambda_approx_2nd_order,
-            "lambda_rayleigh": lambda_rayleigh,
+            'phi_approx_1st': phi_approx_1st,
+            'phi_approx_2nd': phi_approx_2nd,
+            "phi_batch": phi_batch,
 
-            "lambda_gap_1st_order": lambda_gap_1st_order,
-            "lambda_gap_2nd_order": lambda_gap_2nd_order,
+            "phi_gap_1st": phi_gap_1st,
+            "phi_gap_2nd": phi_gap_2nd,
 
-            "lambda_gap_rel_1st": lambda_gap_rel_1st,
-            "lambda_gap_rel_2nd": lambda_gap_rel_2nd,
+            "phi_gap_rel_1st": phi_gap_rel_1st,
+            "phi_gap_rel_2nd": phi_gap_rel_2nd,
 
             'n_dataset': self.n_dataset,
             "batch_size": batch_size
         }
 
-    def _compute_eval_test_losses(self, weights_norm_sq:float, model:nn.Module, step:int, eval_frequency:int) -> dict:
+    def _compute_eval_test_losses(self, model:nn.Module, step:int, eval_frequency:int) -> dict:
         """Compute eval and test losses periodically for analysis"""
         eval_test_metrics = {}
 
@@ -197,29 +208,19 @@ class BaseExperiment(ABC):
             logits = model(x)
             task_loss, L_task_variance = self.task_loss_fn.forward(logits, y)  # Pure task loss
 
-            # optimizer.zero_grad(set_to_none=True)
-            # with torch.cuda.amp.autocast():
-            #     logits = model(x)
-            #     task_loss, L_task_variance = self.task_loss_fn.forward(logits, y)
-
-            # ==== COMPUTE THE RESIDUAL ====
+            # ==== COMPUTE THE RESIDUAL ERRORS ====
             task_residual_error_sq = self.task_loss_fn.compute_residual_squared(logits, y)
 
             # === COMPUTE PRE-BACKWARD METRICS ===
-            weights_norm_sq = self._compute_weight_norm_sq(model)
             learning_rate = scheduler.get_last_lr()[0]
 
             # === BACKWARD PASS ===
             task_loss.backward()
-            # self.scaler.scale(task_loss).backward()
-            # self.scaler.step(optimizer)
-            # self.scaler.update()
 
             # === COMPUTE BATCH METRICS ===
             batch_metrics = self._compute_batch_metrics(
                 model=model,
                 task_loss=task_loss,
-                weights_norm_sq=weights_norm_sq,
                 batch_size=batch_size,
                 L_task_variance=L_task_variance,
                 task_residual_error_sq=task_residual_error_sq
@@ -227,7 +228,6 @@ class BaseExperiment(ABC):
 
             # === COMPUTE EVAL/TEST LOSSES (PERIODIC) ===
             eval_test_metrics = self._compute_eval_test_losses(
-                weights_norm_sq=weights_norm_sq,
                 model=model,
                 step=step,
                 eval_frequency=eval_frequency
