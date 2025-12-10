@@ -3,12 +3,25 @@
 This repository provides the official code and reproducible experiments accompanying the paper **"Irreducible Loss Floors in Gradient-Based Optimization and Energy Footprint"**. It implements the numerical estimation of lower bounds on the training loss under idealized convergence assumptions, and illustrates the framework's behavior across various learning problems.
 
 
-## Experiment 1: Validity of the Gradient Flow simplified Flow on MNIST (Train=6K, Test=1K)
+## Experiment 1: Validity of the Gradient Flow simplified ODE on MNIST
 
 Goal: Verify the validity of the SGD ODE
 Result: `experiments/experiment_GD_wideMLP_2000.csv`
-Config:
+
 ````
+# Load MNIST dataset
+transform = transforms.Compose([transforms.ToTensor()])
+train_dataset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+train_batch_size = len(train_dataset) // 10
+train_dataset = torch.utils.data.Subset(train_dataset, range(0, train_batch_size)) # Use first `eval_batch_size` samples
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=train_batch_size, shuffle=False, pin_memory=True, num_workers=1)
+
+# For full dataset evaluation (smaller subset for efficiency)
+test_batch_size = min(1000, train_batch_size)
+test_dataset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+test_dataset = torch.utils.data.Subset(test_dataset, range(0, test_batch_size)) # Use first `eval_batch_size` samples
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=test_batch_size, shuffle=False, pin_memory=True)
+
 max_steps = 1000 * 2
 architecture ="wideMLP" # "WideMLP"
 model_args = {"depth":3}
