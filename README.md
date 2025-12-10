@@ -1,31 +1,39 @@
-# [Research] State Rate ODE for Loss Dynamics
+# State-Rate ODE for Neural Network Loss Dynamics
 
-[[NeuRIPS submission 2025]](https://openreview.net/forum?id=QJtanJS4T9&referrer=%5Bthe%20profile%20of%20Williams%20Zanga%5D(%2Fprofile%3Fid%3D~Williams_Zanga1))
-[[Colab notebook]](https://drive.google.com/file/d/1L0TcJK8bXg5FBA9gU6PkUkgHXjoZg-wo/view?usp=sharing)
+[[NeuRIPS Submission 2025]](https://openreview.net/forum?id=QJtanJS4T9&referrer=%5Bthe%20profile%20of%20Williams%20Zanga%5D(%2Fprofile%3Fid%3D~Williams_Zanga1))
+[[Colab Notebook]](https://colab.research.google.com/drive/1vnaRANDRfJ4JdQR6x6gjoasundZBreIY?usp=sharing)
 
 
-This repository provides an (in-developement and experimental) implementation of the Loss state rate factorized ODE $\dot L(t) \;=\; -\,\phi(t)\,g(L(t), \sigma_{L})$ for neural network training loss dynamics under gradient flow. That factorization separates loss-specific topology scalar that depends on the instantaneous loss and batch statistics from  time-varying (to be refined) effective rate that aggregates data, architecture and optimizer effects. 
+This repository provides an (in-developement and experimental) implementation of the Loss state rate factorized ODE 
+
+$\dot \frac{dL}{dt} = - \phi(t) \cdot g\left(L(t), \sigma_{L}(t) \right)$ 
+
+for neural network training loss dynamics under gradient flow. That factorization separates loss-specific topology scalar $g\left(L, \sigma_{L} \right)$ that depends on the instantaneous loss and batch statistics from  time-varying (to be refined) effective rate $\phi(t)$ that aggregates data, architecture and optimizer effects. 
 
 <p align="center">
-  <img src="illustrations/loss_ode_sgd_1.png" alt="non-causal 15033000" width="80%">
+  <img src="illustrations/loss_ode_sgd_2.png" alt="non-causal 15033000" width="90%">
 </p>
 
+## Scope and Model Validation
+| Dataset | Purpose |
+| :--- | :--- |
+| **MNIST** | Initial framework validation and refinement on a canonical image classification task. |
+| **CIFAR10** | Advanced experimentation and verification of the ODE's predictive capabilities. |
+| **AGNews** | Real-world, large-scale validation using **MiniLM** to test the framework's effectiveness in NLP/LLM contexts. |
 
-Datasets used during development:
-- [MNIST](https://en.wikipedia.org/wiki/MNIST_database): early stage developement
-- [CIFAR10](https://www.cs.toronto.edu/~kriz/cifar.html): second stage developement
-- [AGNews](https://huggingface.co/datasets/sh0416/ag_news)
 
+## Getting started with a quick experiment
 
-## Getting started with a quick experiment (MNIST + SGD ODE)
-See Colab notebook: https://drive.google.com/file/d/1L0TcJK8bXg5FBA9gU6PkUkgHXjoZg-wo/view?usp=sharing
+**project Architecture**: The clean separation into solvers.py, loss_wrappers.py, and experiments.py facilitates reproducible research, allowing independent testing of the numerical solvers and easy integration of new loss functions and architectures.
+
+See the full, reproducible setup in the Colab Notebook: https://colab.research.google.com/drive/1vnaRANDRfJ4JdQR6x6gjoasundZBreIY?usp=sharing
 
 <p align="center">
-  <img src="illustrations/loss_ode_adagrad.png" alt="non-causal 15033000" width="80%">
+  <img src="illustrations/loss_ode_adagrad.png" alt="non-causal 15033000" width="90%">
 </p>
 
 <p align="center">
-  <img src="illustrations/loss_ode_rmsprop.png" alt="non-causal 15033000" width="80%">
+  <img src="illustrations/loss_ode_rmsprop.png" alt="non-causal 15033000" width="90%">
 </p>
 
 
@@ -49,11 +57,11 @@ See Colab notebook: https://drive.google.com/file/d/1L0TcJK8bXg5FBA9gU6PkUkgHXjo
 ````
 @misc{wkzng2025iredfloor,
   title={Irreducible Loss Floors in Gradient-Based Optimization and Energy Footprint},
-  author  = {Anonymous Author},
+  author  = {Williams Zanga},
   year    = {2025},
   eprint  = {arXiv:2506.xxxxx},
   archivePrefix = {arXiv},
   primaryClass  = {cs.LG},
-  note    = {Under review at NeurIPS 2025}
+  note    = {Reviewed at NeurIPS 2025}
 }
 ````
