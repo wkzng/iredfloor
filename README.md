@@ -6,7 +6,7 @@
 
 This repository provides an (in-developement and experimental) implementation of the Loss state rate factorized ODE 
 
-$\dot \frac{dL}{dt} = - \phi(t) \cdot g\left(L(t), \sigma_{L}(t) \right)$ 
+$ dL/dt = - \phi(t) \cdot g\left(L(t), \sigma_{L}(t) \right)$ 
 
 for neural network training loss dynamics under gradient flow. That factorization separates loss-specific topology scalar $g\left(L, \sigma_{L} \right)$ that depends on the instantaneous loss and batch statistics from  time-varying (to be refined) effective rate $\phi(t)$ that aggregates data, architecture and optimizer effects. 
 
