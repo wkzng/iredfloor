@@ -4,7 +4,7 @@
 [[Colab Notebook]](https://colab.research.google.com/drive/1vnaRANDRfJ4JdQR6x6gjoasundZBreIY?usp=sharing)
 
 
-This repository provides an (in-developement and experimental) implementation of the Loss state rate factorized ODE $dL/dt = - \phi(t) g(L, \sigma_{L} \right)$ for neural network training loss dynamics under gradient flow. That factorization separates loss-specific topology scalar $g\left(L, \sigma_{L} \right)$ that depends on the instantaneous loss and batch statistics from  time-varying (to be refined) effective rate $\phi(t)$ that aggregates data, architecture and optimizer effects. 
+This repository provides an (in-developement and experimental) implementation of the Loss state rate factorized ODE $dL/dt = - \phi(t) g\left(L, \sigma_{L} \right)$ for neural network training loss dynamics under gradient flow. That factorization separates loss-specific topology scalar $g\left(L, \sigma_{L} \right)$ that depends on the instantaneous loss and batch statistics from  time-varying (to be refined) effective rate $\phi(t)$ that aggregates data, architecture and optimizer effects. 
 
 <p align="center">
   <img src="illustrations/loss_ode_sgd_2.png" alt="non-causal 15033000" width="90%">
